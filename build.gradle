@@ -3,7 +3,7 @@ apply plugin: 'java'
 sourceCompatibility = 1.7
 version = '1.0'
 
-def cassandra_version = '2.1.12'
+def cassandra_version = '3.11.2'
 def supercsv_version = '2.1.0'
 
 repositories {
@@ -20,5 +20,5 @@ dependencies {
 task run(type:JavaExec) {
     main = 'bulkload.BulkLoad'
     classpath = sourceSets.main.runtimeClasspath
-    args 'ORCL','YHOO','GOOG'
+    args 'data/data-201701010000.gz'
 }

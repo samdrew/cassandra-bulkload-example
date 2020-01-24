@@ -13,16 +13,13 @@
  */
 package bulkload;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.math.BigDecimal;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.*;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
+import java.util.zip.GZIPInputStream;
 
 import org.supercsv.io.CsvListReader;
 import org.supercsv.prefs.CsvPreference;
@@ -35,19 +32,24 @@ import org.apache.cassandra.io.sstable.CQLSSTableWriter;
 /**
  * Usage: java bulkload.BulkLoad
  */
-public class BulkLoad
-{
-    public static final String CSV_URL = "http://real-chart.finance.yahoo.com/table.csv?s=%s";
+public class BulkLoad {
+    public static final SimpleDateFormat DATE_FORMAT_DIR = new SimpleDateFormat("yyyyMMddHHmm");
+    public static final SimpleDateFormat DATE_FORMAT_FILE = new SimpleDateFormat("'data/data-'yyyyMMddHHmm'.gz'");
 
-    /** Default output directory */
-    public static final String DEFAULT_OUTPUT_DIR = "./data";
+    /**
+     * Default output directory
+     */
+    public static final String DEFAULT_OUTPUT_DIR = "./data" + DATE_FORMAT_DIR.format(new Date());
 
-    public static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
 
-    /** Keyspace name */
-    public static final String KEYSPACE = "quote";
-    /** Table name */
-    public static final String TABLE = "historical_prices";
+    /**
+     * Keyspace name
+     */
+    public static final String KEYSPACE = "wiki";
+    /**
+     * Table name
+     */
+    public static final String TABLE = "views";
 
     /**
      * Schema for bulk loading table.
@@ -55,32 +57,26 @@ public class BulkLoad
      * otherwise CQLSSTableWriter throws exception.
      */
     public static final String SCHEMA = String.format("CREATE TABLE %s.%s (" +
-                                                          "ticker ascii, " +
-                                                          "date timestamp, " +
-                                                          "open decimal, " +
-                                                          "high decimal, " +
-                                                          "low decimal, " +
-                                                          "close decimal, " +
-                                                          "volume bigint, " +
-                                                          "adj_close decimal, " +
-                                                          "PRIMARY KEY (ticker, date) " +
-                                                      ") WITH CLUSTERING ORDER BY (date DESC)", KEYSPACE, TABLE);
+            "datetime timestamp, " +
+            "wiki text, " +
+            "title text, " +
+            "views int, " +
+            "PRIMARY KEY ((datetime, wiki, title)) " +
+            ")", KEYSPACE, TABLE);
 
     /**
      * INSERT statement to bulk load.
      * It is like prepared statement. You fill in place holder for each data.
      */
     public static final String INSERT_STMT = String.format("INSERT INTO %s.%s (" +
-                                                               "ticker, date, open, high, low, close, volume, adj_close" +
-                                                           ") VALUES (" +
-                                                               "?, ?, ?, ?, ?, ?, ?, ?" +
-                                                           ")", KEYSPACE, TABLE);
+                "datetime, wiki, title, views" +
+            ") VALUES (" +
+                "?, ?, ?, ?" +
+            ")", KEYSPACE, TABLE);
 
-    public static void main(String[] args)
-    {
-        if (args.length == 0)
-        {
-            System.out.println("usage: java bulkload.BulkLoad <list of ticker symbols>");
+    public static void main(String[] args) {
+        if (args.length == 0) {
+            System.out.println("usage: java bulkload.BulkLoad <list of files>");
             return;
         }
 
@@ -89,8 +85,7 @@ public class BulkLoad
 
         // Create output directory that has keyspace and table name in the path
         File outputDir = new File(DEFAULT_OUTPUT_DIR + File.separator + KEYSPACE + File.separator + TABLE);
-        if (!outputDir.exists() && !outputDir.mkdirs())
-        {
+        if (!outputDir.exists() && !outputDir.mkdirs()) {
             throw new RuntimeException("Cannot create output directory: " + outputDir);
         }
 
@@ -98,67 +93,45 @@ public class BulkLoad
         CQLSSTableWriter.Builder builder = CQLSSTableWriter.builder();
         // set output directory
         builder.inDirectory(outputDir)
-               // set target schema
-               .forTable(SCHEMA)
-               // set CQL statement to put data
-               .using(INSERT_STMT)
-               // set partitioner if needed
-               // default is Murmur3Partitioner so set if you use different one.
-               .withPartitioner(new Murmur3Partitioner());
+                // set target schema
+                .forTable(SCHEMA)
+                // set CQL statement to put data
+                .using(INSERT_STMT)
+                // set partitioner if needed
+                // default is Murmur3Partitioner so set if you use different one.
+                .withPartitioner(new Murmur3Partitioner());
         CQLSSTableWriter writer = builder.build();
 
-        for (String ticker : args)
-        {
-            HttpURLConnection conn;
-            try
-            {
-                URL url = new URL(String.format(CSV_URL, ticker));
-                conn = (HttpURLConnection) url.openConnection();
-            }
-            catch (IOException e)
-            {
-                throw new RuntimeException(e);
-            }
-
+        for (String file : args) {
+            CsvPreference csvPreference = new CsvPreference.Builder('\"', ' ', "\n").build();
             try (
-                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                CsvListReader csvReader = new CsvListReader(reader, CsvPreference.STANDARD_PREFERENCE)
-            )
-            {
-                if (conn.getResponseCode() != HttpURLConnection.HTTP_OK)
-                {
-                    System.out.println("Historical data not found for " + ticker);
-                    continue;
-                }
-
-                csvReader.getHeader(true);
+                    InputStream fileStream = new FileInputStream(file);
+                    InputStream gzipStream = new GZIPInputStream(fileStream);
+                    Reader decoder = new InputStreamReader(gzipStream);
+                    BufferedReader buffered = new BufferedReader(decoder);
+                    CsvListReader csvReader = new CsvListReader(buffered, csvPreference)
+            ) {
+                csvReader.getHeader(false);
 
                 // Write to SSTable while reading data
-                List<String> line;
-                while ((line = csvReader.read()) != null)
-                {
+                String line;
+                while ((line = buffered.readLine()) != null) {
+                    List<String> record = Arrays.asList(line.split(" "));
                     // We use Java types here based on
                     // http://www.datastax.com/drivers/java/2.0/com/datastax/driver/core/DataType.Name.html#asJavaClass%28%29
-                    writer.addRow(ticker,
-                                  DATE_FORMAT.parse(line.get(0)),
-                                  new BigDecimal(line.get(1)),
-                                  new BigDecimal(line.get(2)),
-                                  new BigDecimal(line.get(3)),
-                                  new BigDecimal(line.get(4)),
-                                  Long.parseLong(line.get(5)),
-                                  new BigDecimal(line.get(6)));
+                    writer.addRow(DATE_FORMAT_FILE.parse(file),
+                            record.get(0),
+                            record.get(1),
+                            new Integer(record.get(2)));
                 }
-            }
-            catch (InvalidRequestException | ParseException | IOException e)
-            {
+            } catch (InvalidRequestException | ParseException | IOException e) {
                 e.printStackTrace();
             }
         }
 
-        try
-        {
+        try {
             writer.close();
+        } catch (IOException ignore) {
         }
-        catch (IOException ignore) {}
     }
 }
