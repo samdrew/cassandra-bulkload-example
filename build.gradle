@@ -3,7 +3,7 @@ apply plugin: 'java'
 sourceCompatibility = 1.7
 version = '1.0'
 
-def cassandra_version = '3.11.2'
+def cassandra_version = '2.1.12'
 def supercsv_version = '2.1.0'
 
 repositories {
